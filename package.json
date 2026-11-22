@@ -1,0 +1,10 @@
+{
+  "name": "roadrash-online",
+  "version": "1.0.0",
+  "description": "Road Rash Online - Modern Browser Adaptation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
+
