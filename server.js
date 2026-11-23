@@ -201,6 +201,47 @@ function broadcastToRoom(roomCode, msg, excludeSocket = null) {
   }
 }
 
+function endRace(room, roomCode) {
+  if (!room || room.game.status !== 'racing') return;
+  if (room.currentRace?.endTimer) clearTimeout(room.currentRace.endTimer);
+  if (room.currentRace?.timer) clearTimeout(room.currentRace.timer);
+
+  room.game.status = 'open';
+  room.game.rounds = (room.game.rounds || 0) + 1;
+
+  if (room.game.spectate) {
+    room.game.tally = room.game.tally || [];
+    const pts = [10, 7, 5, 3, 2, 1];
+    const finishers = Object.entries(room.game.results || {})
+      .sort((a, b) => (a[1].status === 'finished' ? a[1].time : Infinity) - (b[1].status === 'finished' ? b[1].time : Infinity));
+    
+    finishers.forEach(([pid, r], idx) => {
+      let tEntry = room.game.tally.find(x => x.id === pid);
+      if (!tEntry) {
+        const player = room.game.players.find(p => p.id === pid);
+        tEntry = { id: pid, name: player ? player.name : 'Player', points: 0, wins: 0 };
+        room.game.tally.push(tEntry);
+      }
+      if (r.status === 'finished') {
+        tEntry.points += pts[idx] || 1;
+        if (idx === 0) tEntry.wins = (tEntry.wins || 0) + 1;
+      }
+    });
+    room.game.tally.sort((a, b) => b.points - a.points);
+  }
+
+  broadcastToRoom(roomCode, {
+    t: 'race_end',
+    raceId: room.currentRace?.raceId,
+    results: room.game.results || {}
+  });
+  broadcastToRoom(roomCode, {
+    t: 'room',
+    game: room.game
+  });
+  room.currentRace = null;
+}
+
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (!url.pathname.startsWith('/mano')) {
@@ -239,21 +280,43 @@ server.on('upgrade', (req, socket, head) => {
 
   function leaveCurrentRoom() {
     if (!client.currentRoom) return;
-    const room = rooms.get(client.currentRoom);
+    const roomCode = client.currentRoom;
+    const room = rooms.get(roomCode);
     if (!room) return;
 
     room.clients = room.clients.filter(c => c !== client);
     room.game.players = room.game.players.filter(p => p.id !== client.id);
     room.game.racers = room.game.racers.filter(id => id !== client.id);
 
+    if (room.currentRace) {
+      room.currentRace.readyPlayers.delete(client.id);
+      room.currentRace.finPlayers.delete(client.id);
+      if (!room.currentRace.goSent) {
+        const remaining = room.clients.filter(c => c !== client);
+        if (remaining.length > 0 && remaining.every(c => room.currentRace.readyPlayers.has(c.id))) {
+          room.currentRace.goSent = true;
+          if (room.currentRace.timer) clearTimeout(room.currentRace.timer);
+          broadcastToRoom(roomCode, { t: 'go', raceId: room.currentRace.raceId });
+        }
+      } else {
+        const remaining = room.clients.filter(c => c !== client && (!room.game.spectate || c.id !== room.game.hostId));
+        if (remaining.length === 0 || remaining.every(c => room.currentRace.finPlayers.has(c.id))) {
+          endRace(room, roomCode);
+        }
+      }
+    }
+
     if (room.clients.length === 0) {
-      rooms.delete(client.currentRoom);
+      if (room.currentRace?.timer) clearTimeout(room.currentRace.timer);
+      if (room.currentRace?.endTimer) clearTimeout(room.currentRace.endTimer);
+      rooms.delete(roomCode);
     } else {
       if (room.game.hostId === client.id) {
         room.game.hostId = room.clients[0].id;
         room.game.host = room.clients[0].name;
       }
-      broadcastToRoom(client.currentRoom, { t: 'room', game: room.game });
+      broadcastToRoom(roomCode, { t: 'left', id: client.id });
+      broadcastToRoom(roomCode, { t: 'room', game: room.game });
     }
     client.currentRoom = null;
   }
@@ -425,6 +488,7 @@ server.on('upgrade', (req, socket, head) => {
       if (!room || room.game.hostId !== client.id) return;
 
       room.game.status = 'racing';
+      room.game.results = {};
       const raceId = `race_${Date.now()}`;
       const seed = Math.floor(Math.random() * 1000000);
       const order = room.game.players.map((p, idx) => ({
@@ -432,6 +496,27 @@ server.on('upgrade', (req, socket, head) => {
         name: p.name,
         char: p.char || 0
       }));
+
+      if (room.currentRace?.timer) clearTimeout(room.currentRace.timer);
+      if (room.currentRace?.endTimer) clearTimeout(room.currentRace.endTimer);
+
+      const currentRoomCode = client.currentRoom;
+      room.currentRace = {
+        raceId,
+        readyPlayers: new Set(),
+        finPlayers: new Set(),
+        goSent: false,
+        timer: null,
+        endTimer: null
+      };
+
+      // Safety fallback: if ready message is delayed or dropped, auto-start after 4s
+      room.currentRace.timer = setTimeout(() => {
+        if (room.currentRace && !room.currentRace.goSent) {
+          room.currentRace.goSent = true;
+          broadcastToRoom(currentRoomCode, { t: 'go', raceId });
+        }
+      }, 4000);
 
       broadcastToRoom(client.currentRoom, {
         t: 'start',
@@ -447,7 +532,51 @@ server.on('upgrade', (req, socket, head) => {
       return;
     }
 
-    if (m.t === 'ready' || m.t === 'state' || m.t === 'hit' || m.t === 'result') {
+    if (m.t === 'ready') {
+      if (!client.currentRoom) return;
+      const room = rooms.get(client.currentRoom);
+      if (!room || !room.currentRace) return;
+
+      room.currentRace.readyPlayers.add(client.id);
+
+      // Check if all connected players in this room are ready
+      const allReady = room.clients.length > 0 && room.clients.every(c => room.currentRace.readyPlayers.has(c.id));
+      if (allReady && !room.currentRace.goSent) {
+        if (room.currentRace.timer) clearTimeout(room.currentRace.timer);
+        room.currentRace.goSent = true;
+        broadcastToRoom(client.currentRoom, { t: 'go', raceId: room.currentRace.raceId });
+      }
+      return;
+    }
+
+    if (m.t === 'fin') {
+      if (!client.currentRoom) return;
+      const room = rooms.get(client.currentRoom);
+      if (!room) return;
+
+      room.game.results = room.game.results || {};
+      room.game.results[client.id] = {
+        status: m.status || 'finished',
+        time: typeof m.time === 'number' ? m.time : 0
+      };
+
+      if (room.currentRace) {
+        room.currentRace.finPlayers.add(client.id);
+        const racers = room.clients.filter(c => !room.game.spectate || c.id !== room.game.hostId);
+        const allDone = racers.length > 0 && racers.every(c => room.currentRace.finPlayers.has(c.id));
+        if (allDone) {
+          endRace(room, client.currentRoom);
+        } else if (!room.currentRace.endTimer) {
+          const currentRoomCode = client.currentRoom;
+          room.currentRace.endTimer = setTimeout(() => {
+            endRace(room, currentRoomCode);
+          }, 15000);
+        }
+      }
+      return;
+    }
+
+    if (m.t === 'state' || m.t === 'hit' || m.t === 'result') {
       if (client.currentRoom) {
         broadcastToRoom(client.currentRoom, { ...m, fromId: client.id }, socket);
       }

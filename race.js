@@ -1477,6 +1477,14 @@ async function startRace(opts, startup) {
     else if (m.t === "link") hint(m.down ? "CONNECTION LOST · RECONNECTING…" : "RECONNECTED", m.down ? 40 : 2);
   };
   let netGo = !net, netSent = 0;
+  if (net) {
+    // Safety fallback: if "go" message is delayed/dropped, auto-start countdown after 5s
+    setTimeout(() => {
+      if (!netGo && !quit) {
+        netGo = true;
+      }
+    }, 5000);
+  }
   if (net?.disconnected) quit = true;
   // ---- Spectating ----
   let watchId = null; // null: follow whoever leads
