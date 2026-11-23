@@ -4,6 +4,17 @@ import { track, analyticsId, analyticsReady } from "./analytics.js?v=93e8070907"
 import { offerInstall, shareLinks, WA_ICON, SHARE_ICON } from "./install.js?v=93e8070907";
 import { offerPromo } from "./promo.js?v=93e8070907";
 import { awardRace, progressLine } from "./progress.js?v=93e8070907";
+
+let networkBaseUrl = null;
+try {
+  fetch("/api/network")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.networkUrl) networkBaseUrl = data.networkUrl;
+    })
+    .catch(() => {});
+} catch (e) {}
+
 // Friend rooms use invite links and host-controlled race starts.
 let sock = null, myId = null, games = [], game = null, chat = [], listeners = new Set(), myChar = null;
 // Positions are only useful fresh: while the connection is stalled, skip them rather than queue a burst for later.
@@ -84,7 +95,17 @@ export async function manoLobby(ctx) {
   }
   function onVisible() { if (document.visibilityState === 'visible') rejoin(); }
   document.addEventListener('visibilitychange', onVisible);
-  const inviteURL = () => {const url=new URL(location.href);url.search='';url.hash='';url.searchParams.set('room',game?.code||roomCode||'');return url.href;};
+  const inviteURL = () => {
+    let base = location.origin;
+    if ((location.hostname === 'localhost' || location.hostname === '127.0.0.1') && networkBaseUrl) {
+      base = networkBaseUrl;
+    }
+    const url = new URL(base + location.pathname);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('room', game?.code || roomCode || '');
+    return url.href;
+  };
   const setNotice = (text,error=false) => {notice=text;const el=ctx.app.querySelector('[data-notice]');if(el){el.textContent=text;el.classList.toggle('error',error);}};
   const setName = input => {const n=input.value.trim().slice(0,16);if(n){S.name=n;S.nameAuto=false;ctx.persist();}input.value=S.name;send({t:'hello',name:S.name});};
   let hostTries = 0, joinCode = null, reviving = false, missingCode = null;
@@ -163,7 +184,8 @@ export async function manoLobby(ctx) {
     const scores=latestResults || (Object.keys(game.results||{}).length?game.results:null);
     const standings=scores ? Object.entries(scores).sort((a,b)=>(a[1].status==='finished'?a[1].time:Infinity)-(b[1].status==='finished'?b[1].time:Infinity)) : [];
     const results=standings.length ? `<section><table class="room-results" aria-label="Final standings"><thead><tr><th>Rider</th><th>Result</th></tr></thead><tbody>${standings.map(([id,r],i)=>`<tr><td>${esc(names.get(id)||'Player')}</td><td>${r.status==='finished'?`#${i+1} · ${Math.floor(r.time/60)}:${(r.time%60).toFixed(2).padStart(5,'0')}`:({quit:'Left race',unavailable:'Could not load',wrecked:'Wrecked',busted:'Busted'}[r.status]||'Left race')}</td></tr>`).join('')}</tbody></table></section>`:'';
-    const root=menuScreen(standings.length ? (tour?'Round Results':'Race Results') : (tour?'Your Tournament':'Your Room'), `${results}${standingsHTML}${standings.length?'<details><summary>Room & players</summary>':''}<div class="menu-columns"><section class="menu-card"><h2>Invite your friends</h2><span class="menu-muted">Room code</span><strong class="room-code">${esc(game.code||'')}</strong>
+    const netBadge = networkBaseUrl || (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' ? location.origin : null);
+    const root=menuScreen(standings.length ? (tour?'Round Results':'Race Results') : (tour?'Your Tournament':'Your Room'), `${results}${standingsHTML}${standings.length?'<details><summary>Room & players</summary>':''}<div class="menu-columns"><section class="menu-card"><h2>Invite your friends</h2><span class="menu-muted">Room code</span><strong class="room-code">${esc(game.code||'')}</strong>${netBadge ? `<div class="menu-muted" style="margin-top:4px;font-size:14px">Network base: <strong style="color:var(--hot)">${esc(netBadge)}</strong></div>` : ''}
       <div class="menu-actions"><button data-copy>Copy Invite Link</button><button class="icon-btn" data-wa>${WA_ICON}WhatsApp</button>${navigator.share?`<button class="icon-btn" data-share>${SHARE_ICON}Share</button>`:''}</div>
       <label style="margin-top:24px">Your name<input data-name maxlength="16" autocomplete="nickname"></label></section>
       <section class="menu-card"><h2>Riders · ${tour?game.players.length-1:game.players.length}/8</h2><ul class="room-players">${game.players.map(p=>`<li><span>${esc(p.name)}${p.id===myId?' (you)':''}</span><small>${p.away?'Reconnecting…':p.id===game.hostId?(tour?'Host · watching':'Host'):'Joined'}</small></li>`).join('')}</ul>

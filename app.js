@@ -16,6 +16,16 @@ import { units, setUnits, distanceLabel } from "./units.js?v=93e8070907";
 import { awardRace, rankOf, riderXP, currentStreak, progressHTML, progressLine, rankChip } from "./progress.js?v=93e8070907";
 
 const [T, SPEC] = await loadStartupData(document.getElementById("app"), ["./assets/text.json", "./data/bikes.json"]);
+
+let networkBaseUrl = null;
+try {
+  fetch('/api/network')
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.networkUrl) networkBaseUrl = data.networkUrl;
+    })
+    .catch(() => {});
+} catch (e) {}
 const NAV = { 2: "Quick Race", 4: "Career", 6: "Settings", 8: "Main Menu", 13: "Play with Friends", 86: "Back" };
 const t = (id) => NAV[id] ?? T[id] ?? "";
 const app = document.getElementById("app");
@@ -283,7 +293,11 @@ function autoNext(root, res, go) {
 // Casual by design: the time comes from the link, so a doctored link only fools the friend who opens it.
 const fmtTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(2).padStart(5, '0')}`;
 function challengeURL(tr, lvl, res) {
-  const u = new URL('/', location.origin);
+  let origin = location.origin;
+  if ((location.hostname === 'localhost' || location.hostname === '127.0.0.1') && networkBaseUrl) {
+    origin = networkBaseUrl;
+  }
+  const u = new URL('/', origin);
   u.searchParams.set('beat', tr.id); u.searchParams.set('lvl', lvl); u.searchParams.set('time', res.time.toFixed(2)); u.searchParams.set('place', res.place);
   if (named()) u.searchParams.set('by', S.name);
   return u.href;
@@ -317,7 +331,8 @@ function quickResult(tr, res, {lvl = S.quickLevel || 1, challenge = null} = {}) 
   // a clean finish shares a challenge link to this track and level; anything else just invites friends to the game
   const link = !res.usedCheats && res.status === 'finished' && time ? challengeURL(tr, lvl, res) : null;
   const base = !link ? 'I’m playing Road Rash in my browser. Come race me!' : verdict?.won ? `I beat ${challenge.by}’s time on ${tr.name} in Road Rash: ${time}. Think you can beat me?` : `I finished #${res.place} on ${tr.name} in ${time} in Road Rash. Think you can beat my time?`;
-  let brag = base, share = shareLinks(brag, link || location.origin + '/');
+  const netOrigin = ((location.hostname === 'localhost' || location.hostname === '127.0.0.1') && networkBaseUrl) ? networkBaseUrl : location.origin;
+  let brag = base, share = shareLinks(brag, link || netOrigin + '/');
   const root = menuScreen(heading, `<p>${esc(tr.name)}${time ? ` · ${time}` : ''}</p>${verdict ? verdict.html : ''}${res.usedCheats ? '<p>CHEATS USED · UNSCORED</p>' : ''}${progressHTML(res.progress)}${res.score ? scoreHTML() : ''}
     <div class="home-actions"><button class="primary" data-again>Race Again</button><button data-track>Change Track</button><button data-home>Main Menu</button></div>
     <div class="menu-actions share-actions"><span class="menu-muted">${link ? 'Challenge a friend to beat your time' : 'Challenge a friend'}</span><button class="icon-btn" data-wa>${WA_ICON}WhatsApp</button>${share.native ? `<button class="icon-btn" data-share>${SHARE_ICON}Share…</button>` : ''}<button data-friends>Race with friends</button></div>`);
@@ -327,7 +342,7 @@ function quickResult(tr, res, {lvl = S.quickLevel || 1, challenge = null} = {}) 
   root.querySelector('[data-friends]').onclick = () => { S.mode = 'mano'; mano(); };
   if (res.score) showScore(root, res.score, ([rank, where]) => {
     brag = link ? `${base} I’m also #${rank} in ${where} today.` : `I'm #${rank} in ${where} on Road Rash today. Race me:`;
-    share = shareLinks(brag, link || location.origin + '/?board');
+    share = shareLinks(brag, link || netOrigin + '/?board');
   });
   const again = () => race(tr, {quick: true, challenge});
   root.querySelector('[data-again]').onclick = again;

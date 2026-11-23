@@ -34,9 +34,13 @@ node server.js
 
 On Windows, you can also use [start.bat](start.bat).
 
-4. Open the URL shown in the terminal (default: `http://localhost:3000`).
+4. Open the URL shown in the terminal:
+   - **Local**: `http://localhost:3000`
+   - **Network**: `http://<your-network-ip>:3000` (e.g. `http://10.42.24.70:3000`)
 
-The server serves static game files, provides local API routes (`/api/race`, `/api/board`), and hosts the local multiplayer WebSocket endpoint at `/mano`.
+Devices on the same Wi-Fi or local network (mobile phones, tablets, other PCs) can connect directly to the **Network** address to play multiplayer and join rooms.
+
+The server serves static game files, provides local API routes (`/api/race`, `/api/board`, `/api/network`), and hosts the local multiplayer WebSocket endpoint at `/mano`.
 
 ## Project structure
 

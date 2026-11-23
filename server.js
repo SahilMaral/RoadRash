@@ -3,9 +3,31 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { exec } = require('child_process');
+const os = require('os');
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
+
+function getNetworkAddresses() {
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name]) {
+      const isIPv4 = typeof net.family === 'string' ? net.family === 'IPv4' : net.family === 4;
+      if (isIPv4 && !net.internal) {
+        addresses.push({ interface: name, address: net.address });
+      }
+    }
+  }
+  return addresses;
+}
+
+function getPrimaryNetworkIp() {
+  const addrs = getNetworkAddresses();
+  if (addrs.length === 0) return null;
+  const preferred = addrs.find(a => /wi-?fi|wlan|eth|ethernet|en[0-9]|wl/i.test(a.interface)) || addrs[0];
+  return preferred ? preferred.address : addrs[0].address;
+}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -79,6 +101,20 @@ const server = http.createServer((req, res) => {
         week: { top: [], you: { points: 100, races: 1 }, world: { rank: 1, top: [] } }
       }));
     }
+    return;
+  }
+
+  if (reqPath === '/api/network') {
+    const netIp = getPrimaryNetworkIp();
+    const addresses = getNetworkAddresses();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ip: netIp,
+      port: PORT,
+      localUrl: `http://localhost:${PORT}`,
+      networkUrl: netIp ? `http://${netIp}:${PORT}` : null,
+      addresses
+    }));
     return;
   }
 
@@ -463,14 +499,25 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  const url = `http://localhost:${PORT}`;
+  const networkIp = getPrimaryNetworkIp();
+  const localUrl = `http://localhost:${PORT}`;
+  const networkUrl = networkIp ? `http://${networkIp}:${PORT}` : null;
+  const launchUrl = networkUrl || localUrl;
+
   console.log('====================================================');
-  console.log('  Road Rash Online is running 100% LOCALLY!');
-  console.log('  Single Player + Local Multiplayer (Mano-a-Mano)');
-  console.log(`  Open in your browser: ${url}`);
+  console.log('  Road Rash Online (Network Base)');
+  console.log('  Single Player + Local & Network Multiplayer');
+  console.log('====================================================');
+  console.log(`  ➜ Local:   ${localUrl}`);
+  if (networkUrl) {
+    console.log(`  ➜ Network: ${networkUrl}`);
+    console.log('');
+    console.log('  Connect any device (phone, laptop, PC) on your');
+    console.log(`  Wi-Fi / LAN to: ${networkUrl}`);
+  }
   console.log('====================================================\n');
 
   if (process.platform === 'win32' && !process.env.NO_OPEN) {
-    exec(`start ${url}`);
+    exec(`start ${launchUrl}`);
   }
 });
